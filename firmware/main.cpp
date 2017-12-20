@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-const uint8_t ATLAS_SENSOR_EC_DEFAULT_ADDRESS = 9; // 0x64;
+const uint8_t ATLAS_SENSOR_EC_DEFAULT_ADDRESS = 0x64;
 const uint8_t ATLAS_SENSOR_TEMP_DEFAULT_ADDRESS = 0x66;
 const uint8_t ATLAS_SENSOR_PH_DEFAULT_ADDRESS = 0x63;
 const uint8_t ATLAS_SENSOR_DO_DEFAULT_ADDRESS = 0x61;
@@ -14,15 +14,16 @@ const uint8_t ATLAS_RESPONSE_CODE_SUCCESS = 0x1;
 
 class AtlasScientificBoard {
 private:
+    char buffer[20];
     uint8_t address;
 
 private:
-    uint8_t readResponse(const char *str, char *buffer, size_t length, uint32_t read_delay = 200) {
+    uint8_t readResponse(const char *str, char *buffer, size_t length, uint32_t readDelay = 200) {
         Wire.beginTransmission(address);
         Wire.write(str);
         Wire.endTransmission();
 
-        delay(read_delay);
+        delay(readDelay);
 
         while (true) {
             Wire.requestFrom((uint8_t)address, 1 + length, (uint8_t)1);
@@ -73,9 +74,12 @@ public:
     }
 
     bool begin() {
-        char buffer[20];
         uint8_t value = readResponse("I", buffer, sizeof(buffer));
         return value != 0xff;
+    }
+
+    const char *who() {
+        return buffer;
     }
 };
 
@@ -156,7 +160,9 @@ public:
 
         addressWeFound = 0;
 
-        while (true) {
+        auto started = millis();
+
+        while (millis() - started < 5000) {
             Serial1.print("I\r");
 
             String reply = Serial1.readStringUntil('\r');
@@ -196,14 +202,15 @@ public:
         }
 
         if (addressWeFound == 0) {
+            Serial.println("atlas-helper: No device on UART...");
             return false;
         }
 
         Serial.print("atlas-helper: Configuring with address: ");
-        Serial.println(addressWeFound);
+        Serial.println((uint32_t)addressWeFound);
 
         Serial1.print("I2C,");
-        Serial1.print(addressWeFound);
+        Serial1.print((uint32_t)addressWeFound);
         Serial1.print("\r");
         Serial1.flush();
 
@@ -224,15 +231,6 @@ void setup() {
         delay(100);
     }
 
-    if (false) {
-        for (uint8_t i = 0; i < 128; ++i) {
-            AtlasScientificBoard sensor(i);
-            if (sensor.begin()) {
-                Serial.println(i);
-            }
-        }
-    }
-
     Serial.println("atlas-helper: Begin");
 
     if (helper.findAnySensor()) {
@@ -251,6 +249,19 @@ void setup() {
                 Serial.println("atlas-helper: Done");
                 return;
             }
+        }
+    }
+
+    helper.setup();
+
+    for (uint8_t i = 0; i < 128; ++i) {
+        AtlasScientificBoard sensor(i);
+        if (sensor.begin()) {
+            Serial.print("atlas-helper: Found I2C device on 0x");
+            Serial.print(i, HEX);
+            Serial.print(" ");
+            String name(sensor.who());
+            Serial.println(name);
         }
     }
 
