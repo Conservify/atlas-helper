@@ -227,14 +227,16 @@ void setup() {
     AtlasHelper helper;
     helper.setup();
 
-    while (!Serial /*&& millis() < 2 * 1000*/) {
+    pinMode(13, OUTPUT);
+    digitalWrite(13, HIGH);
+
+    while (!Serial && millis() < 2 * 1000) {
         delay(100);
     }
 
     Serial.println("atlas-helper: Begin");
 
     if (helper.findAnySensor()) {
-        // helper.backToUart();
         Serial.println("atlas-helper: Done");
         return;
     }
@@ -247,6 +249,7 @@ void setup() {
 
             if (helper.pingDevice()) {
                 Serial.println("atlas-helper: Done");
+                digitalWrite(13, LOW);
                 return;
             }
         }
@@ -262,6 +265,7 @@ void setup() {
             Serial.print(" ");
             String name(sensor.who());
             Serial.println(name);
+            digitalWrite(13, LOW);
         }
     }
 
