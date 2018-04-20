@@ -5,3 +5,5 @@ default:
 
 clean:
 	rm -rf build
+
+veryclean: clean
