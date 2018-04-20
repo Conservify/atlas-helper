@@ -58,6 +58,11 @@ public:
         this->address = address;
     }
 
+    bool lock() {
+        uint8_t value = readResponse("Plock,1", nullptr, 0);
+        return value == 0x1;
+    }
+
     bool find() {
         uint8_t value = readResponse("FIND", nullptr, 0);
         return value == 0x1;
@@ -83,6 +88,27 @@ public:
     }
 };
 
+uint8_t getExpectedAddressFromWho(String reply) {
+    if (reply.startsWith("?I")) {
+        if (reply.indexOf("EC") >= 0) {
+            return ATLAS_SENSOR_EC_DEFAULT_ADDRESS;
+        }
+        if (reply.indexOf("ORP") >= 0) {
+            return ATLAS_SENSOR_ORP_DEFAULT_ADDRESS;
+        }
+        if (reply.indexOf("pH") >= 0) {
+            return ATLAS_SENSOR_PH_DEFAULT_ADDRESS;
+        }
+        if (reply.indexOf("DO") >= 0) {
+            return ATLAS_SENSOR_DO_DEFAULT_ADDRESS;
+        }
+        if (reply.indexOf("RTD") >= 0) {
+            return ATLAS_SENSOR_TEMP_DEFAULT_ADDRESS;
+        }
+    }
+    return 0x0;
+}
+
 class AtlasHelper {
 private:
     uint8_t addressWeFound = 0;
@@ -102,6 +128,7 @@ public:
         AtlasScientificBoard sensor(address);
         Serial.print("atlas-helper: ");
         Serial.print(name);
+
         if (!sensor.begin()) {
             Serial.println(" FAILED");
             return false;
@@ -144,6 +171,35 @@ public:
         return ec() || temp() || ph() || dissolvedOxygen() || orp() ;
     }
 
+    bool scanEntireBus() {
+        for (uint8_t i = 0; i < 128; ++i) {
+            AtlasScientificBoard sensor(i);
+            if (sensor.begin()) {
+                Serial.print("atlas-helper: Found I2C device on 0x");
+                Serial.print(i, HEX);
+                Serial.print(" ");
+                Serial.print(sensor.who());
+                Serial.println();
+
+                if (getExpectedAddressFromWho(sensor.who()) != i) {
+                    Serial.println("atlas-helper: Wrong address!");
+                    while (true);
+                }
+
+                if (!sensor.lock()) {
+                    Serial.println("atlas-helper: Failed to lock!");
+                    while (true);
+                }
+                else {
+                    Serial.println("atlas-helper: Locked");
+                }
+
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool backToUart() {
         AtlasScientificBoard sensor(addressWeFound);
         Serial.println("atlas-helper: Back to UART");
@@ -153,6 +209,11 @@ public:
     bool pingDevice() {
         Serial.println("atlas-helper: Ping!");
         return test(addressWeFound, "ATLAS");
+    }
+
+    bool lock() {
+        AtlasScientificBoard sensor(addressWeFound);
+        return sensor.lock();
     }
 
     bool changeDeviceToI2c() {
@@ -165,37 +226,16 @@ public:
         while (millis() - started < 5000) {
             Serial1.print("I\r");
 
-            String reply = Serial1.readStringUntil('\r');
+            auto reply = Serial1.readStringUntil('\r');
+
+            auto expectedAddress = getExpectedAddressFromWho(reply);
+            if (expectedAddress > 0) {
+                addressWeFound = expectedAddress;
+                break;
+            }
 
             if (reply.length() > 0) {
                 Serial.println(reply);
-            }
-            if (reply.startsWith("?I")) {
-                if (reply.indexOf("EC") >= 0) {
-                    addressWeFound = ATLAS_SENSOR_EC_DEFAULT_ADDRESS;
-                    Serial.println("atlas-helper: Found EC");
-                    break;
-                }
-                if (reply.indexOf("ORP") >= 0) {
-                    addressWeFound = ATLAS_SENSOR_ORP_DEFAULT_ADDRESS;
-                    Serial.println("atlas-helper: Found ORP");
-                    break;
-                }
-                if (reply.indexOf("pH") >= 0) {
-                    addressWeFound = ATLAS_SENSOR_PH_DEFAULT_ADDRESS;
-                    Serial.println("atlas-helper: Found pH");
-                    break;
-                }
-                if (reply.indexOf("DO") >= 0) {
-                    addressWeFound = ATLAS_SENSOR_DO_DEFAULT_ADDRESS;
-                    Serial.println("atlas-helper: Found DO");
-                    break;
-                }
-                if (reply.indexOf("RTD") >= 0) {
-                    addressWeFound = ATLAS_SENSOR_TEMP_DEFAULT_ADDRESS;
-                    Serial.println("atlas-helper: Found RTD");
-                    break;
-                }
             }
 
             delay(500);
@@ -207,12 +247,14 @@ public:
         }
 
         Serial.print("atlas-helper: Configuring with address: ");
-        Serial.println((uint32_t)addressWeFound);
+        Serial.println((uint32_t)addressWeFound, HEX);
 
         Serial1.print("I2C,");
         Serial1.print((uint32_t)addressWeFound);
         Serial1.print("\r");
         Serial1.flush();
+
+        Serial.println("atlas-helper: Configured");
 
         pinMode(0, INPUT);
         pinMode(1, INPUT);
@@ -224,9 +266,6 @@ public:
 void setup() {
     Serial.begin(115200);
 
-    AtlasHelper helper;
-    helper.setup();
-
     pinMode(13, OUTPUT);
     digitalWrite(13, HIGH);
 
@@ -236,37 +275,29 @@ void setup() {
 
     Serial.println("atlas-helper: Begin");
 
-    if (helper.findAnySensor()) {
-        Serial.println("atlas-helper: Done");
+    AtlasHelper helper;
+    helper.setup();
+
+    Serial.println("atlas-helper: Looking for known sensors on I2C...");
+
+    if (helper.scanEntireBus()) {
+        Serial.println("atlas-helper: All done!");
         return;
     }
 
-    if (helper.changeDeviceToI2c()) {
-        helper.setup();
+    Serial.println("atlas-helper: None, looking on Uart...");
 
-        while (millis() < 10000) {
-            delay(1000);
-
-            if (helper.pingDevice()) {
-                Serial.println("atlas-helper: Done");
-                digitalWrite(13, LOW);
-                return;
-            }
-        }
+    if (!helper.changeDeviceToI2c()) {
+        while (true);
     }
 
     helper.setup();
 
-    for (uint8_t i = 0; i < 128; ++i) {
-        AtlasScientificBoard sensor(i);
-        if (sensor.begin()) {
-            Serial.print("atlas-helper: Found I2C device on 0x");
-            Serial.print(i, HEX);
-            Serial.print(" ");
-            String name(sensor.who());
-            Serial.println(name);
-            digitalWrite(13, LOW);
-        }
+    Serial.println("atlas-helper: Scanning, again");
+
+    if (helper.scanEntireBus()) {
+        Serial.println("atlas-helper: All done!");
+        return;
     }
 
     delay(100);
