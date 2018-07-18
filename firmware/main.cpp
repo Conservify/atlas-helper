@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <cstdarg>
 
 const uint8_t ATLAS_SENSOR_EC_DEFAULT_ADDRESS = 0x64;
 const uint8_t ATLAS_SENSOR_TEMP_DEFAULT_ADDRESS = 0x66;
@@ -11,6 +12,10 @@ const uint8_t ATLAS_RESPONSE_CODE_NO_DATA = 0xff;
 const uint8_t ATLAS_RESPONSE_CODE_NOT_READY = 0xfe;
 const uint8_t ATLAS_RESPONSE_CODE_ERROR = 0x2;
 const uint8_t ATLAS_RESPONSE_CODE_SUCCESS = 0x1;
+
+void logf(const char *f, ...);
+
+void logfln(const char *f, ...);
 
 class AtlasScientificBoard {
 private:
@@ -81,6 +86,15 @@ public:
     bool begin() {
         uint8_t value = readResponse("I", buffer, sizeof(buffer));
         return value != 0xff;
+    }
+
+    bool configure(uint8_t address) {
+        char buffer[20];
+        snprintf(buffer, sizeof(buffer), "I2C,%d", address);
+        uint8_t value = readResponse(buffer, nullptr, 0);
+        logfln("Send: %s got %d", buffer, address);
+        this->address = address;
+        return value == 0x1;
     }
 
     const char *who() {
@@ -171,32 +185,78 @@ public:
         return ec() || temp() || ph() || dissolvedOxygen() || orp() ;
     }
 
-    bool scanEntireBus() {
-        for (uint8_t i = 0; i < 128; ++i) {
-            AtlasScientificBoard sensor(i);
-            if (sensor.begin()) {
-                Serial.print("atlas-helper: Found I2C device on 0x");
-                Serial.print(i, HEX);
-                Serial.print(" ");
-                Serial.print(sensor.who());
-                Serial.println();
+    bool check(uint8_t address) {
+        AtlasScientificBoard sensor(address);
+        if (sensor.begin()) {
+            Serial.print("atlas-helper: Found I2C device on 0x");
+            Serial.print(address, HEX);
+            Serial.print(" ");
+            Serial.print(sensor.who());
+            Serial.println();
 
-                if (getExpectedAddressFromWho(sensor.who()) != i) {
-                    Serial.println("atlas-helper: Wrong address!");
-                    while (true);
+            auto expectedAddress = getExpectedAddressFromWho(sensor.who());
+            if (expectedAddress != address) {
+                logfln("atlas-helper: Wrong address! (expected = 0x%x, actual = 0x%x)", expectedAddress, address);
+
+                if (!sensor.configure(expectedAddress)) {
+                    logfln("atlas-helper: Failed to fix address.");
+                    return false;
                 }
 
-                if (!sensor.lock()) {
-                    Serial.println("atlas-helper: Failed to lock!");
-                    while (true);
-                }
-                else {
-                    Serial.println("atlas-helper: Locked");
-                }
+                logfln("atlas-helper: Fixed");
 
+                delay(500);
+            }
+
+            if (!sensor.lock()) {
+                logfln("atlas-helper: Failed to lock!");
+                return false;
+            }
+            else {
+                logfln("atlas-helper: Locked");
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    bool scanExpected() {
+        uint8_t addresses[] = {
+            ATLAS_SENSOR_EC_DEFAULT_ADDRESS,
+            ATLAS_SENSOR_TEMP_DEFAULT_ADDRESS,
+            ATLAS_SENSOR_PH_DEFAULT_ADDRESS,
+            ATLAS_SENSOR_DO_DEFAULT_ADDRESS,
+            ATLAS_SENSOR_ORP_DEFAULT_ADDRESS,
+        };
+
+        for (auto i : addresses) {
+            // Serial.print("atlas-helper: Check 0x");
+            // Serial.println(i, HEX);
+            if (check(i)) {
                 return true;
             }
         }
+
+        return false;
+    }
+
+    bool scanEntireBus() {
+        Serial.println("atlas-helper: Scanning entire bus.");
+
+        for (uint8_t i = 128; i > 0; --i) {
+            if (check(i)) {
+                Serial.println();
+                return true;
+            }
+            else {
+                Serial.print(".");
+            }
+        }
+
+        Serial.println();
+
         return false;
     }
 
@@ -246,7 +306,7 @@ public:
             return false;
         }
 
-        Serial.print("atlas-helper: Configuring with address: ");
+        Serial.print("atlas-helper: Configuring with address: 0x");
         Serial.println((uint32_t)addressWeFound, HEX);
 
         Serial1.print("I2C,");
@@ -273,35 +333,83 @@ void setup() {
         delay(100);
     }
 
-    Serial.println("atlas-helper: Begin");
+    auto scanWholeBus = false;
 
-    AtlasHelper helper;
-    helper.setup();
+    while (true) {
+        Serial.println();
+        Serial.println();
+        Serial.println("atlas-helper: Begin");
 
-    Serial.println("atlas-helper: Looking for known sensors on I2C...");
+        AtlasHelper helper;
+        helper.setup();
 
-    if (helper.scanEntireBus()) {
-        Serial.println("atlas-helper: All done!");
-        return;
+        Serial.println("atlas-helper: Looking for known sensors on I2C...");
+
+        if (!scanWholeBus && helper.scanExpected()) {
+            scanWholeBus = false;
+            helper.setup();
+            Serial.println("atlas-helper: All done!");
+            delay(5000);
+        }
+        else if (scanWholeBus && helper.scanEntireBus()) {
+            scanWholeBus = false;
+            helper.setup();
+            Serial.println("atlas-helper: All done!");
+            delay(5000);
+        }
+        else {
+            Serial.println("atlas-helper: None, looking on Uart...");
+
+            if (!helper.changeDeviceToI2c()) {
+                Serial.println("atlas-helper: Failed to change device to I2C...");
+
+                scanWholeBus = true;
+            }
+            else {
+                scanWholeBus = false;
+
+                helper.setup();
+
+                Serial.println("atlas-helper: Scanning, again");
+
+                if (helper.scanExpected()) {
+                    Serial.println("atlas-helper: All done!");
+                    delay(5000);
+                }
+            }
+        }
+
+        delay(1000);
     }
-
-    Serial.println("atlas-helper: None, looking on Uart...");
-
-    if (!helper.changeDeviceToI2c()) {
-        while (true);
-    }
-
-    helper.setup();
-
-    Serial.println("atlas-helper: Scanning, again");
-
-    if (helper.scanEntireBus()) {
-        Serial.println("atlas-helper: All done!");
-        return;
-    }
-
-    delay(100);
 }
 
 void loop() {
+}
+
+#define DEBUG_LINE_MAX 256
+
+void logf(const char *f, ...) {
+    char buffer[DEBUG_LINE_MAX];
+    va_list args;
+
+    va_start(args, f);
+    vsnprintf(buffer, DEBUG_LINE_MAX, f, args);
+    va_end(args);
+
+    Serial.print(buffer);
+}
+
+void logfln(const char *f, ...) {
+    char buffer[DEBUG_LINE_MAX];
+    va_list args;
+
+    va_start(args, f);
+    auto w = vsnprintf(buffer, DEBUG_LINE_MAX - 2, f, args);
+    va_end(args);
+
+    buffer[w] = '\r';
+    buffer[w + 1] = '\n';
+    buffer[w + 2] = 0;
+
+    Serial.print(buffer);
 }
