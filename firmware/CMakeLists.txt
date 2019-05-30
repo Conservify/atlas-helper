@@ -1,11 +1,8 @@
-set(SOURCE_FILES
-  main.cpp
-)
+include(Arduino)
 
-set(LIBRARIES
-  Wire
-)
+enable_arduino_toolchain()
 
-include_directories(../../)
-
-arduino(atlas-helper "${SOURCE_FILES}" "${LIBRARIES}")
+add_arduino_library(atlas-helper "main.cpp")
+find_package(Wire)
+target_link_libraries(atlas-helper Wire)
+add_arduino_firmware(atlas-helper)
